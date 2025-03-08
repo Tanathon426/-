@@ -1,0 +1,96 @@
+1 อธิบายโค้ดที่ป้องกันการ lock เงินไว้ใน contract
+function withdrawIfTimeout() public {
+    require(numPlayer == 2, "Game not started");
+    require(block.timestamp > gameStartTime + 10 minutes, "Wait 10 minutes");
+
+    for (uint i = 0; i < players.length; i++) {
+        if (!hasRevealed[players[i]]) {
+            payable(players[i]).transfer(1 ether);
+        }
+    }
+
+    _resetGame();
+}
+
+ตรวจสอบว่ามีผู้เล่นครบ 2 คนแล้วหรือยัง (require(numPlayer == 2, "Game not started");)
+ตรวจสอบว่าผ่านไป 10 นาทีหลังจากเริ่มเกมหรือยัง (require(block.timestamp > gameStartTime + 10 minutes, "Wait 10 minutes");)
+ถ้ามีผู้เล่นที่ยังไม่ทำการ reveal (!hasRevealed[players[i]]), ผู้เล่นที่รออยู่สามารถขอรับเงินคืนได้
+รีเซ็ตเกมให้พร้อมเล่นใหม่โดยเรียก _resetGame();
+
+2 อธิบายโค้ดส่วนที่จัดการกับความล่าช้าที่ผู้เล่นไม่ครบทั้งสองคนเสียที
+หากเกมเริ่มแล้ว (numPlayer == 2) แต่มีผู้เล่นที่ไม่ reveal ภายใน 10 นาที
+ผู้เล่นที่ไม่ได้ reveal จะสามารถถูกตัดสิทธิ์ และอีกฝ่ายสามารถถอนเงินคืนได้
+ทำให้ไม่มีสถานการณ์ที่เงินจะถูกล็อกในสัญญาอัจฉริยะ
+
+3 อธิบายโค้ดส่วนที่ทำการซ่อน choice และ commit
+function addPlayer(bytes32 commitHash) public payable onlyAllowedPlayers {
+    require(numPlayer < 2, "Game already full");
+    require(msg.value == 1 ether, "Must send 1 ether");
+    require(player_commit[msg.sender] == bytes32(0), "Already joined");
+
+    reward += msg.value;
+    player_commit[msg.sender] = commitHash;
+    players.push(msg.sender);
+    numPlayer++;
+
+    if (numPlayer == 2) {
+        setStartTime();
+        gameStartTime = block.timestamp;
+    }
+}
+
+ผู้เล่นต้องส่งค่าที่ทำการ commit (ค่า hash ของการเลือก + ค่า secret) แทนการเลือกโดยตรง
+commitHash เก็บใน player_commit[msg.sender] ทำให้ไม่มีใครรู้ว่าเลือกอะไร
+ใช้ onlyAllowedPlayers ตรวจสอบว่าเป็นผู้เล่นที่ได้รับอนุญาตเท่านั้น
+หากมีผู้เล่นครบ 2 คนแล้ว จะเริ่มจับเวลาเกม (setStartTime() และ gameStartTime = block.timestamp;)
+
+4 อธิบายโค้ดส่วนทำการ reveal และนำ choice มาตัดสินผู้ชนะ
+function reveal(uint choice, string memory secret) public {
+    require(numPlayer == 2, "Not enough players");
+    require(!hasRevealed[msg.sender], "Already revealed");
+    require(choice >= 0 && choice <= 4, "Invalid choice");
+    require(player_commit[msg.sender] == keccak256(abi.encodePacked(choice, secret)), "Invalid reveal");
+
+    player_choice[msg.sender] = choice;
+    hasRevealed[msg.sender] = true;
+    numRevealed++;
+
+    if (numRevealed == 2) {
+        _checkWinnerAndPay();
+    }
+}
+
+เล่นต้องทำการ reveal โดยส่งค่า choice และ secret
+ตรวจสอบว่า:
+มีผู้เล่นครบ 2 คน
+ผู้เล่นคนนี้ยังไม่เคย reveal (!hasRevealed[msg.sender])
+ค่าที่ reveal ตรงกับค่า commit (keccak256(abi.encodePacked(choice, secret)))
+บันทึกค่าที่เลือก (player_choice[msg.sender] = choice;)
+เมื่อทั้งสองคน reveal ครบ (numRevealed == 2), จะเรียก _checkWinnerAndPay();
+
+ฟังก์ชันตัดสินผู้ชนะ (_checkWinnerAndPay)
+function _checkWinnerAndPay() private {
+    uint c0 = player_choice[players[0]];
+    uint c1 = player_choice[players[1]];
+    address payable a0 = payable(players[0]);
+    address payable a1 = payable(players[1]);
+
+    if ((c0 + 1) % 5 == c1 || (c0 + 3) % 5 == c1) {
+        a1.transfer(reward);
+    } else if ((c1 + 1) % 5 == c0 || (c1 + 3) % 5 == c0) {
+        a0.transfer(reward);
+    } else {
+        a0.transfer(reward / 2);
+        a1.transfer(reward / 2);
+    }
+
+    _resetGame();
+}
+
+เปรียบเทียบค่าที่เลือกของผู้เล่นทั้งสอง
+กติกาของ Rock-Paper-Scissors-Lizard-Spock คือ
+(choice + 1) % 5 และ (choice + 3) % 5 จะชนะ
+ถ้าผู้เล่น 1 ชนะ → ส่งเงินให้ players[1]
+ถ้าผู้เล่น 0 ชนะ → ส่งเงินให้ players[0]
+ถ้าเสมอ → แบ่งเงินรางวัลให้ทั้งสองคน
+รีเซ็ตเกมให้เล่นใหม่ (_resetGame();)
